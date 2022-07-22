@@ -14,10 +14,25 @@ export const newQuestionRouter = t.router({
       })
     )
     .mutation(async ({ ctx, input }) => {
+      const setting = await ctx.prisma.settings.findFirst({
+        where: { userId: input.userId },
+        select: { requiresLogin: true },
+      })
+    
+      // If setting is not found, fallback to login not required
+      const requiresLogin = setting?.requiresLogin ?? false;
+
+      if (requiresLogin) {
+        if (!ctx.session || !ctx.session.user) {
+          throw new TRPCError({ code: "UNAUTHORIZED" });
+        }
+      }
+
       const question = await ctx.prisma.question.create({
         data: {
           userId: input.userId,
           body: input.question,
+          authorId: ctx.session?.user?.id,
         },
       });
 
@@ -32,6 +47,20 @@ export const newQuestionRouter = t.router({
 
   getAll: protectedProcedure.query(async ({ ctx }) => {
     const questions = await ctx.prisma.question.findMany({
+      select: {
+        id: true,
+        body: true,
+        createdAt: true,
+        status: true,
+        userId: true,
+        authorId: true,
+
+        author: {
+          select: {
+            name: true,
+          }
+        }
+      },
       where: {
         userId: ctx.session.user.id,
         status: "PENDING",
@@ -46,6 +75,16 @@ export const newQuestionRouter = t.router({
     .input(z.object({ questionId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       const question = await ctx.prisma.question.findFirst({
+        select: {
+          userId: true,
+          
+          body: true,
+          author: {
+            select: {
+              name: true,
+            }
+          }
+        },
         where: { id: input.questionId },
       });
       if (!question || question.userId !== ctx.session.user.id) {
@@ -55,11 +94,14 @@ export const newQuestionRouter = t.router({
         });
       }
 
+      const author = question.author?.name || "Anonymous";
+
       await pusherServerClient.trigger(
         `user-${question.userId}`,
         "question-pinned",
         {
           question: question.body,
+          author,
         }
       );
       return question;
